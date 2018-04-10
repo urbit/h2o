@@ -2,6 +2,17 @@ project('libh2o', 'c', version : '0.13.3')
 
 version = meson.project_version()
 
+legacy_meson = false
+
+detect_meson_version = run_command('meson', '--version')
+meson_ver = detect_meson_version.stdout()
+
+if(meson_ver == '0.29.0\n')
+  legacy_meson = true
+elif(not meson.version().version_compare('>=0.40.0'))
+  error('Meson 0.29.0 is last legacy version supported. Otherwise please upgrade to 0.40.0 or higher.')
+endif
+
 lib_src = ['deps/cloexec/cloexec.c',
 'deps/libgkc/gkc.c',
 'deps/libyrmcds/close.c',
@@ -82,6 +93,8 @@ lib_src = ['deps/cloexec/cloexec.c',
 'lib/http2/stream.c',
 'lib/http2/http2_debug_state.c']
 
+osdet = build_machine.system()
+
 inc = include_directories(['./include',
                           './deps/cloexec/',
                           './deps/brotli/enc/',
@@ -95,11 +108,18 @@ inc = include_directories(['./include',
                           './deps/yaml/include',
                           './deps/yoml'])
 
-libuv_dep = dependency('libuv', version: '>=1.8.0')
+libuv_dep = dependency('libuv', version: '>=1.8.0', fallback:['libuv', 'libuv_dep'])
 zlib_dep = dependency('zlib')
-openssl_dep = dependency('openssl')
 
-lib = library('libh2o', sources: lib_src, version: version,
+if osdet == 'darwin'
+  libcrypto = meson.get_compiler('c').find_library('crypto', dirs: [ '/usr/local/opt/openssl/lib/' ])
+  libssl = meson.get_compiler('c').find_library('ssl', dirs: [ '/usr/local/opt/openssl/lib/' ])
+  openssl_dep = declare_dependency(dependencies: [libcrypto, libssl], include_directories: include_directories('/usr/local/opt/openssl/include'))
+else
+  openssl_dep = dependency('openssl', version: '>=1.0.0')
+endif
+
+lib = library('h2o', sources: lib_src, version: version,
 include_directories: inc,
 c_args: ['-Wall', '-Wno-unused-value', '-Wno-unused-function', '-O2'],
 dependencies: [libuv_dep, zlib_dep, openssl_dep],
