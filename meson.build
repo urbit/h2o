@@ -111,6 +111,25 @@ inc = include_directories(['./include',
 libuv_dep = dependency('libuv', version: '>=1.8.0', fallback:['libuv', 'libuv_dep'])
 zlib_dep = dependency('zlib')
 
+os_deps = []
+
+if osdet == 'bsd'
+
+  pthread_dep = meson.get_compiler('c').find_library('pthread')
+  os_deps = os_deps + [pthread_dep]
+
+elif osdet == 'linux'
+
+  if(legacy_meson)
+    pthread_dep = find_library('pthread')
+  else
+    pthread_dep = meson.get_compiler('c').find_library('pthread')
+  endif
+
+  os_deps = os_deps + [pthread_dep]
+
+endif
+
 if osdet == 'darwin'
   libcrypto = meson.get_compiler('c').find_library('crypto', dirs: [ '/usr/local/opt/openssl/lib/' ])
   libssl = meson.get_compiler('c').find_library('ssl', dirs: [ '/usr/local/opt/openssl/lib/' ])
@@ -122,7 +141,7 @@ endif
 lib = library('h2o', sources: lib_src, version: version,
 include_directories: inc,
 c_args: ['-Wall', '-Wno-unused-value', '-Wno-unused-function', '-O2'],
-dependencies: [libuv_dep, zlib_dep, openssl_dep],
+dependencies: os_deps + [libuv_dep, zlib_dep, openssl_dep],
 install: true)
 
 libh2o_dep = declare_dependency(include_directories : inc,
