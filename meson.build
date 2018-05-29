@@ -140,7 +140,7 @@ endif
 
 lib = static_library('h2o', sources: lib_src, version: version,
 include_directories: inc,
-c_args: ['-Wall', '-Wno-unused-value', '-Wno-unused-function', '-O2'],
+c_args: ['-Wall', '-Wno-unused-value', '-Wno-unused-function'],
 dependencies: os_deps + [libuv_dep, zlib_dep, openssl_dep],
 install: true)
 
