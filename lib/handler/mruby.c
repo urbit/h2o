@@ -152,6 +152,13 @@ mrb_value h2o_mruby_compile_code(mrb_state *mrb, h2o_mruby_config_vars_t *config
         abort();
     }
 
+    /* adjust stack length of toplevel environment (see https://github.com/h2o/h2o/issues/1464#issuecomment-337880408) */
+    if (mrb->c->cibase->env) {
+        struct REnv *e = mrb->c->cibase->env;
+        if (MRB_ENV_STACK_LEN(e) < proc->body.irep->nlocals)
+            MRB_SET_ENV_STACK_LEN(e, proc->body.irep->nlocals);
+    }
+
     /* reset configuration context */
     h2o_mruby_eval_expr(mrb, "H2O::ConfigurationContext.reset");
     h2o_mruby_assert(mrb);
@@ -426,6 +433,27 @@ static int build_env_sort_header_cb(const void *_x, const void *_y)
     return x < y ? -1 : 1;
 }
 
+static mrb_value build_path_info(mrb_state *mrb, h2o_req_t *req, size_t confpath_len_wo_slash)
+{
+    if (req->path_normalized.len == confpath_len_wo_slash)
+        return mrb_str_new_lit(mrb, "");
+
+    assert(req->path_normalized.len > confpath_len_wo_slash);
+
+    size_t path_info_start, path_info_end = req->query_at != SIZE_MAX ? req->query_at : req->path.len;
+
+    if (req->norm_indexes == NULL) {
+        path_info_start = confpath_len_wo_slash;
+    } else if (req->norm_indexes[0] == 0 && confpath_len_wo_slash == 0) {
+        /* path without leading slash */
+        path_info_start = 0;
+    } else {
+        path_info_start = req->norm_indexes[confpath_len_wo_slash] - 1;
+    }
+
+    return mrb_str_new(mrb, req->path.base + path_info_start, path_info_end - path_info_start);
+}
+
 static mrb_value build_env(h2o_mruby_generator_t *generator)
 {
     h2o_mruby_shared_context_t *shared = generator->ctx->shared;
@@ -437,14 +465,15 @@ static mrb_value build_env(h2o_mruby_generator_t *generator)
     /* environment */
     mrb_hash_set(mrb, env, mrb_ary_entry(shared->constants, H2O_MRUBY_LIT_REQUEST_METHOD),
                  mrb_str_new(mrb, generator->req->method.base, generator->req->method.len));
+
     size_t confpath_len_wo_slash = generator->req->pathconf->path.len;
     if (generator->req->pathconf->path.base[generator->req->pathconf->path.len - 1] == '/')
         --confpath_len_wo_slash;
+    assert(confpath_len_wo_slash <= generator->req->path_normalized.len);
+
     mrb_hash_set(mrb, env, mrb_ary_entry(shared->constants, H2O_MRUBY_LIT_SCRIPT_NAME),
                  mrb_str_new(mrb, generator->req->pathconf->path.base, confpath_len_wo_slash));
-    mrb_hash_set(mrb, env, mrb_ary_entry(shared->constants, H2O_MRUBY_LIT_PATH_INFO),
-                 mrb_str_new(mrb, generator->req->path_normalized.base + confpath_len_wo_slash,
-                             generator->req->path_normalized.len - confpath_len_wo_slash));
+    mrb_hash_set(mrb, env, mrb_ary_entry(shared->constants, H2O_MRUBY_LIT_PATH_INFO), build_path_info(mrb, generator->req, confpath_len_wo_slash));
     mrb_hash_set(mrb, env, mrb_ary_entry(shared->constants, H2O_MRUBY_LIT_QUERY_STRING),
                  generator->req->query_at != SIZE_MAX ? mrb_str_new(mrb, generator->req->path.base + generator->req->query_at + 1,
                                                                     generator->req->path.len - (generator->req->query_at + 1))
@@ -557,10 +586,14 @@ static int handle_response_header(h2o_mruby_context_t *handler_ctx, h2o_iovec_t 
         } else if (token == H2O_TOKEN_CONTENT_LENGTH) {
             req->res.content_length = h2o_strtosize(value.base, value.len);
         } else {
-            if (token == H2O_TOKEN_LINK)
-                h2o_push_path_in_link_header(req, value.base, value.len);
             value = h2o_strdup(&req->pool, value.base, value.len);
-            h2o_add_header(&req->pool, &req->res.headers, token, NULL, value.base, value.len);
+            if (token == H2O_TOKEN_LINK) {
+                h2o_iovec_t new_value = h2o_push_path_in_link_header(req, value.base, value.len);
+                if (new_value.len)
+                    h2o_add_header(&req->pool, &req->res.headers, token, NULL, new_value.base, new_value.len);
+            } else {
+                h2o_add_header(&req->pool, &req->res.headers, token, NULL, value.base, value.len);
+            }
         }
     } else if (name.len > fallthru_set_prefix.len &&
                h2o_memis(name.base, fallthru_set_prefix.len, fallthru_set_prefix.base, fallthru_set_prefix.len)) {
