@@ -1,4 +1,4 @@
-project('libh2o', 'c', version : '0.13.3')
+project('libh2o', 'c', version : '0.13.5')
 
 version = meson.project_version()
 
