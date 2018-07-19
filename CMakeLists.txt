@@ -26,12 +26,12 @@ PROJECT(h2o)
 
 SET(VERSION_MAJOR "2")
 SET(VERSION_MINOR "2")
-SET(VERSION_PATCH "3")
+SET(VERSION_PATCH "5")
 SET(VERSION_PRERELEASE "")
 SET(VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}${VERSION_PRERELEASE}")
 SET(LIBRARY_VERSION_MAJOR "0")
 SET(LIBRARY_VERSION_MINOR "13")
-SET(LIBRARY_VERSION_PATCH "3")
+SET(LIBRARY_VERSION_PATCH "5")
 SET(LIBRARY_VERSION "${LIBRARY_VERSION_MAJOR}.${LIBRARY_VERSION_MINOR}.${LIBRARY_VERSION_PATCH}${VERSION_PRERELEASE}")
 SET(LIBRARY_SOVERSION "${LIBRARY_VERSION_MAJOR}.${LIBRARY_VERSION_MINOR}")
 
@@ -211,6 +211,7 @@ SET(PICOTLS_SOURCE_FILES
     deps/picotls/deps/micro-ecc/uECC.c
     deps/picotls/deps/cifra/src/aes.c
     deps/picotls/deps/cifra/src/blockwise.c
+    deps/picotls/deps/cifra/src/chacha20.c
     deps/picotls/deps/cifra/src/chash.c
     deps/picotls/deps/cifra/src/curve25519.c
     deps/picotls/deps/cifra/src/drbg.c
@@ -218,7 +219,9 @@ SET(PICOTLS_SOURCE_FILES
     deps/picotls/deps/cifra/src/gcm.c
     deps/picotls/deps/cifra/src/gf128.c
     deps/picotls/deps/cifra/src/modes.c
+    deps/picotls/deps/cifra/src/poly1305.c
     deps/picotls/deps/cifra/src/sha256.c
+    deps/picotls/deps/cifra/src/sha512.c
     deps/picotls/lib/picotls.c
     deps/picotls/lib/cifra.c
     deps/picotls/lib/uecc.c

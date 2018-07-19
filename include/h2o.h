@@ -113,6 +113,7 @@ typedef struct st_h2o_token_t {
     unsigned char is_init_header_special : 1;
     unsigned char http2_should_reject : 1;
     unsigned char copy_for_push_request : 1;
+    unsigned char dont_compress : 1;
 } h2o_token_t;
 
 #include "h2o/token.h"
@@ -882,7 +883,8 @@ typedef struct st_h2o_req_overrides_t {
  * additional information for extension-based dynamic content
  */
 typedef struct st_h2o_filereq_t {
-    size_t url_path_len;
+    h2o_iovec_t script_name;
+    h2o_iovec_t path_info;
     h2o_iovec_t local_path;
 } h2o_filereq_t;
 
@@ -1033,12 +1035,17 @@ struct st_h2o_req_t {
      * whether or not the connection is persistent.
      * Applications should set this flag to zero in case the connection cannot be kept keep-alive (due to an error etc.)
      */
-    char http1_is_persistent;
+    unsigned char http1_is_persistent : 1;
     /**
      * whether if the response has been delegated (i.e. reproxied).
      * For delegated responses, redirect responses would be handled internally.
      */
-    char res_is_delegated;
+    unsigned char res_is_delegated : 1;
+    /**
+     * whether if the bytes sent is counted by ostreams other than final ostream
+     */
+    unsigned char bytes_counted_by_ostream : 1;
+
     /**
      * Whether the producer of the response has explicitely disabled or
      * enabled compression. One of H2O_COMPRESS_HINT_*
@@ -1955,7 +1962,6 @@ inline h2o_send_state_t h2o_pull(h2o_req_t *req, h2o_ostream_pull_cb cb, h2o_iov
     h2o_send_state_t send_state;
     assert(req->_generator != NULL);
     send_state = cb(req->_generator, req, buf);
-    req->bytes_sent += buf->len;
     if (!h2o_send_state_is_in_progress(send_state))
         req->_generator = NULL;
     return send_state;
