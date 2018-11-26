@@ -5,6 +5,8 @@
 This document describes the configuration directives of the access_log handler.
 </p>
 
+? $ctx->{directive_list}->()->(sub {
+
 <?
 $ctx->{directive}->(
     name    => "access-log",
@@ -18,6 +20,10 @@ EOT
 ?>
 <p>
 If the supplied argument is a scalar, it is treated as the path of the log file, or if the value starts with a <code>|</code>, it is treated as a command to which the log should be emitted.
+</p>
+<p>
+The latter approach (i.e. <code>|</code>) needs to be used for rotating the logs.
+This is because the log file is opened (or the command that emits the log is spawned) before dropping privileges so that it can be owned by root or any other user; therefore it cannot be reopened by the server process itself once it starts running.
 </p>
 <?= $ctx->{example}->('Emit access log to file', <<'EOT')
 access-log: /path/to/access-log-file
@@ -89,13 +95,24 @@ As an example, it is possible to log timestamps in millisecond resolution using 
 <table>
 <caption>Access Timings</caption>
 <tr><th>Name<th>Description
-<tr><td><code>connect-time</code><td>time spent to establish the connection (i.e. since connection gets <code>accept(2)</code>-ed until first octet of the request is received)
-<tr><td><code>request-header-time</code><td>time spent receiving request headers
-<tr><td><code>request-body-time</code><td>time spent receiving request body
-<tr><td><code>request-total-time</code><td>sum of <code>request-header-time</code> and <code>request-body-time</code>
-<tr><td><code>process-time</code><td>time spent after receiving request, before starting to send response
-<tr><td><code>response-time</code><td>time spent sending response
-<tr><td><code>duration</code><td>sum of <code>request-total-time</code>, <code>process-time</code>, <code>response-time</code>
+<tr id="connect-time"><td><code>connect-time</code><td>time spent to establish the connection (i.e. since connection gets <code>accept(2)</code>-ed until first octet of the request is received)
+<tr id="request-header-time"><td><code>request-header-time</code><td>time spent receiving request headers
+<tr id="request-body-time"><td><code>request-body-time</code><td>time spent receiving request body
+<tr id="request-total-time"><td><code>request-total-time</code><td>sum of <code>request-header-time</code> and <code>request-body-time</code>
+<tr id="process-time"><td><code>process-time</code><td>time spent after receiving request, before starting to send response
+<tr id="response-time"><td><code>response-time</code><td>time spent sending response
+<tr id="duration"><td><code>duration</code><td>sum of <code>request-total-time</code>, <code>process-time</code>, <code>response-time</code>
+<tr id="total-time"><td><code>total-time</code><td>same as <code>duration</code> (since v2.3)
+</table>
+<table>
+<caption>Proxy Timings (since v2.3)</caption>
+<tr><th>Name<th>Description
+<tr id="proxy-idle-time"><td><code>proxy-idle-time</code><td>time spent after receiving request, before starting to connect to the upstream
+<tr id="proxy-connect-time"><td><code>proxy-connect-time</code><td>time spent to establish the connection (including SSL handshake)
+<tr id="proxy-request-time"><td><code>proxy-request-time</code><td>time spent sending request (header and body)
+<tr id="proxy-process-time"><td><code>proxy-process-time</code><td>time spent after sending request, before starting to receive response
+<tr id="proxy-response-time"><td><code>proxy-response-time</code><td>time spent receiving response
+<tr id="proxy-total"><td><code>proxy-total</code><td>sum of <code>proxy-request-time</code>, <code>proxy-process-time</code>, <code>proxy-response-time</code>
 </table>
 <table>
 <caption>Connection (since v2.0)</caption>
@@ -129,6 +146,8 @@ The default format is <code>%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-agent}i
 <p>
 Note that you may need to quote (and escape) the format string as required by YAML (see <a href="http://www.yaml.org/YAML_for_ruby.html#single-quoted_strings">Yaml Cookbook</a>).
 </p>
+? })
+
 ? })
 
 ? })

@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Digest::MD5 qw(md5_hex);
 use File::Temp qw(tempfile);
+use IO::Socket::INET;
 use Net::EmptyPort qw(check_port empty_port);
 use POSIX ":sys_wait_h";
 use Path::Tiny;
@@ -12,13 +13,13 @@ use Test::More;
 use Time::HiRes qw(sleep);
 
 use base qw(Exporter);
-our @EXPORT = qw(ASSETS_DIR DOC_ROOT bindir server_features exec_unittest exec_mruby_unittest spawn_server spawn_h2o empty_ports create_data_file md5_file prog_exists run_prog openssl_can_negotiate curl_supports_http2 run_with_curl);
+our @EXPORT = qw(ASSETS_DIR DOC_ROOT bindir server_features exec_unittest exec_mruby_unittest spawn_server spawn_h2o spawn_h2o_raw empty_ports create_data_file md5_file prog_exists run_prog openssl_can_negotiate curl_supports_http2 run_with_curl h2get_exists run_with_h2get run_with_h2get_simple one_shot_http_upstream wait_debugger);
 
 use constant ASSETS_DIR => 't/assets';
 use constant DOC_ROOT   => ASSETS_DIR . "/doc_root";
 
 sub bindir {
-    $ENV{BINARY_DIR} || '.';
+    $ENV{H2O_VALGRIND} || $ENV{BINARY_DIR} || '.';
 }
 
 sub server_features {
@@ -111,6 +112,7 @@ sub exec_mruby_unittest {
 # spawns a child process and returns a guard object that kills the process when destroyed
 sub spawn_server {
     my %args = @_;
+    my $ppid = $$;
     my $pid = fork;
     die "fork failed:$!"
         unless defined $pid;
@@ -129,6 +131,7 @@ sub spawn_server {
             }
         }
         my $guard = scope_guard(sub {
+            return if $$ != $ppid;
             print STDERR "killing $args{argv}->[0]... ";
             my $sig = 'TERM';
           Retry:
@@ -167,10 +170,9 @@ sub spawn_h2o {
     my @opts;
 
     # decide the port numbers
-    my ($port, $tls_port) = empty_ports(2);
+    my ($port, $tls_port) = empty_ports(2, { host => "0.0.0.0" });
 
     # setup the configuration file
-    my ($conffh, $conffn) = tempfile(UNLINK => 1);
     $conf = $conf->($port, $tls_port)
         if ref $conf eq 'CODE';
     if (ref $conf eq 'HASH') {
@@ -178,7 +180,7 @@ sub spawn_h2o {
             if $conf->{opts};
         $conf = $conf->{conf};
     }
-    print $conffh <<"EOT";
+    $conf = <<"EOT";
 $conf
 listen:
   host: 0.0.0.0
@@ -191,28 +193,40 @@ listen:
     certificate-file: examples/h2o/server.crt
 EOT
 
+    my $ret = spawn_h2o_raw($conf, [$port, $tls_port], \@opts);
+    return {
+        %$ret,
+        port => $port,
+        tls_port => $tls_port,
+    };
+}
+
+sub spawn_h2o_raw {
+    my ($conf, $check_ports, $opts) = @_;
+
+    my ($conffh, $conffn) = tempfile(UNLINK => 1);
+    print $conffh $conf;
+
     # spawn the server
     my ($guard, $pid) = spawn_server(
-        argv     => [ bindir() . "/h2o", "-c", $conffn, @opts ],
+        argv     => [ bindir() . "/h2o", "-c", $conffn, @{$opts || []} ],
         is_ready => sub {
-            check_port($port) && check_port($tls_port);
+            check_port($_) or return for @{ $check_ports || [] };
+            1;
         },
     );
-    my $ret = {
-        port     => $port,
-        tls_port => $tls_port,
+    return {
         guard    => $guard,
         pid      => $pid,
         conf_file => $conffn,
     };
-    return $ret;
 }
 
 sub empty_ports {
-    my $n = shift;
+    my ($n, @ep_args) = @_;
     my @ports;
     while (@ports < $n) {
-        my $t = empty_port();
+        my $t = empty_port(@ep_args);
         push @ports, $t
             unless grep { $_ == $t } @ports;
     }
@@ -245,6 +259,7 @@ sub run_prog {
     my ($tempfh, $tempfn) = tempfile(UNLINK => 1);
     my $stderr = `$cmd 2>&1 > $tempfn`;
     my $stdout = do { local $/; <$tempfh> };
+    close $tempfh; # tempfile does not close the file automatically (see perldoc)
     return ($stderr, $stdout);
 }
 
@@ -278,6 +293,86 @@ sub run_with_curl {
             unless curl_supports_http2();
         $cb->("https", $server->{tls_port}, "curl --insecure --http2");
     };
+}
+
+sub h2get_exists {
+    prog_exists(bindir() . "/h2get_bin/h2get");
+}
+
+sub run_with_h2get {
+    my ($server, $script) = @_;
+    plan skip_all => "h2get not found"
+        unless h2get_exists();
+    my ($scriptfh, $scriptfn) = tempfile(UNLINK => 1);
+    print $scriptfh $script;
+    close($scriptfh);
+    return run_prog(bindir()."/h2get_bin/h2get $scriptfn https://127.0.0.1:$server->{tls_port}");
+}
+
+sub run_with_h2get_simple {
+    my ($server, $script) = @_;
+    my $settings = <<'EOS';
+    h2g = H2.new
+    host = ARGV[0]
+    h2g.connect(host)
+    h2g.send_prefix()
+    h2g.send_settings()
+    i = 0
+    while i < 2 do
+        f = h2g.read(-1)
+        if f.type == "SETTINGS" and (f.flags == ACK) then
+            i += 1
+        elsif f.type == "SETTINGS" then
+            h2g.send_settings_ack()
+            i += 1
+        end
+    end
+EOS
+    run_with_h2get($server, $settings."\n".$script);
+}
+
+sub one_shot_http_upstream {
+    my ($response, $port) = @_;
+    my $listen = IO::Socket::INET->new(
+        LocalHost => '0.0.0.0',
+        LocalPort => $port,
+        Proto     => 'tcp',
+        Listen    => 1,
+        Reuse     => 1,
+    ) or die "failed to listen to 127.0.0.1:$port:$!";
+
+    my $pid = fork;
+    die "fork failed" unless defined $pid;
+    if ($pid != 0) {
+        close $listen;
+        my $guard = scope_guard(sub {
+            kill 'KILL', $pid;
+            while (waitpid($pid, WNOHANG) != $pid) {}
+        });
+        return ($port, $guard);
+    }
+
+    while (my $sock = $listen->accept) {
+        $sock->print($response);
+        close $sock;
+    }
+}
+
+sub wait_debugger {
+    my ($pid, $timeout) = @_;
+    $timeout ||= -1;
+
+    print STDERR "waiting debugger for pid $pid ..\n";
+    while ($timeout-- != 0) {
+        my $out = `ps -p $pid -o 'state' | tail -n 1`;
+        if ($out =~ /^(T|.+X).*$/) {
+            print STDERR "debugger attached\n";
+            return 1;
+        }
+        sleep 1;
+    }
+    print STDERR "no debugger attached\n";
+    undef;
 }
 
 1;

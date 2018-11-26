@@ -62,9 +62,15 @@ enum {
     ELEMENT_TYPE_REQUEST_TOTAL_TIME,            /* %{request-total-time}x */
     ELEMENT_TYPE_PROCESS_TIME,                  /* %{process-time}x */
     ELEMENT_TYPE_RESPONSE_TIME,                 /* %{response-total-time}x */
-    ELEMENT_TYPE_DURATION,                      /* %{duration}x */
+    ELEMENT_TYPE_TOTAL_TIME,                    /* %{total-time}x */
     ELEMENT_TYPE_ERROR,                         /* %{error}x */
     ELEMENT_TYPE_PROTOCOL_SPECIFIC,             /* %{protocol-specific...}x */
+    ELEMENT_TYPE_PROXY_IDLE_TIME,               /* %{proxy-idle-time}x */
+    ELEMENT_TYPE_PROXY_CONNECT_TIME,            /* %{proxy-connect-time}x */
+    ELEMENT_TYPE_PROXY_REQUEST_TIME,            /* %{proxy-request-time}x */
+    ELEMENT_TYPE_PROXY_PROCESS_TIME,            /* %{proxy-process-time}x */
+    ELEMENT_TYPE_PROXY_RESPONSE_TIME,           /* %{proxy-response-time}x */
+    ELEMENT_TYPE_PROXY_TOTAL_TIME,              /* %{proxy-total-time}x */
     NUM_ELEMENT_TYPES
 };
 
@@ -203,13 +209,11 @@ h2o_logconf_t *h2o_logconf_compile(const char *fmt, int escape, char *errbuf)
                         goto Error;
                     }
                     break;
-                case 'e':
-                    {
-                        h2o_iovec_t name = h2o_strdup(NULL, pt, quote_end - pt);
-                        NEW_ELEMENT(ELEMENT_TYPE_ENV_VAR);
-                        LAST_ELEMENT()->data.name = name;
-                    }
-                    break;
+                case 'e': {
+                    h2o_iovec_t name = h2o_strdup(NULL, pt, quote_end - pt);
+                    NEW_ELEMENT(ELEMENT_TYPE_ENV_VAR);
+                    LAST_ELEMENT()->data.name = name;
+                } break;
                 case 't':
                     if (h2o_memis(pt, quote_end - pt, H2O_STRLIT("sec"))) {
                         NEW_ELEMENT(ELEMENT_TYPE_TIMESTAMP_SEC_SINCE_EPOCH);
@@ -237,8 +241,7 @@ h2o_logconf_t *h2o_logconf_compile(const char *fmt, int escape, char *errbuf)
     if (h2o_lcstris(pt, quote_end - pt, H2O_STRLIT(name))) {                                                                       \
         h2o_conn_callbacks_t dummy_;                                                                                               \
         NEW_ELEMENT(ELEMENT_TYPE_PROTOCOL_SPECIFIC);                                                                               \
-        LAST_ELEMENT()->data.protocol_specific_callback_index =                                                                    \
-            &dummy_.log_.cb - dummy_.log_.callbacks;                                                                               \
+        LAST_ELEMENT()->data.protocol_specific_callback_index = &dummy_.log_.cb - dummy_.log_.callbacks;                           \
         goto MAP_EXT_Found;                                                                                                        \
     }
                     MAP_EXT_TO_TYPE("connection-id", ELEMENT_TYPE_CONNECTION_ID);
@@ -248,8 +251,15 @@ h2o_logconf_t *h2o_logconf_compile(const char *fmt, int escape, char *errbuf)
                     MAP_EXT_TO_TYPE("request-body-time", ELEMENT_TYPE_REQUEST_BODY_TIME);
                     MAP_EXT_TO_TYPE("process-time", ELEMENT_TYPE_PROCESS_TIME);
                     MAP_EXT_TO_TYPE("response-time", ELEMENT_TYPE_RESPONSE_TIME);
-                    MAP_EXT_TO_TYPE("duration", ELEMENT_TYPE_DURATION);
+                    MAP_EXT_TO_TYPE("duration", ELEMENT_TYPE_TOTAL_TIME);
+                    MAP_EXT_TO_TYPE("total-time", ELEMENT_TYPE_TOTAL_TIME);
                     MAP_EXT_TO_TYPE("error", ELEMENT_TYPE_ERROR);
+                    MAP_EXT_TO_TYPE("proxy-idle-time", ELEMENT_TYPE_PROXY_IDLE_TIME);
+                    MAP_EXT_TO_TYPE("proxy-connect-time", ELEMENT_TYPE_PROXY_CONNECT_TIME);
+                    MAP_EXT_TO_TYPE("proxy-request-time", ELEMENT_TYPE_PROXY_REQUEST_TIME);
+                    MAP_EXT_TO_TYPE("proxy-process-time", ELEMENT_TYPE_PROXY_PROCESS_TIME);
+                    MAP_EXT_TO_TYPE("proxy-response-time", ELEMENT_TYPE_PROXY_RESPONSE_TIME);
+                    MAP_EXT_TO_TYPE("proxy-total-time", ELEMENT_TYPE_PROXY_TOTAL_TIME);
                     MAP_EXT_TO_PROTO("http1.request-index", http1.request_index);
                     MAP_EXT_TO_PROTO("http2.stream-id", http2.stream_id);
                     MAP_EXT_TO_PROTO("http2.priority.received", http2.priority_received);
@@ -539,6 +549,8 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             pos += sprintf(pos, "%" PRIu64, (uint64_t)req->bytes_sent);
             break;
         case ELEMENT_TYPE_PROTOCOL: /* %H */
+            if (req->version == 0)
+                goto EmitNull;
             RESERVE(sizeof("HTTP/1.1"));
             pos += h2o_stringify_protocol_version(pos, req->version);
             break;
@@ -547,6 +559,8 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             pos = append_addr(pos, req->conn->callbacks->get_peername, req->conn, nullexpr);
             break;
         case ELEMENT_TYPE_METHOD: /* %m */
+            if (req->input.method.len == 0)
+                goto EmitNull;
             RESERVE(req->input.method.len * unsafe_factor);
             pos = append_unsafe_string(pos, req->input.method.base, req->input.method.len);
             break;
@@ -558,13 +572,13 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             RESERVE(sizeof(H2O_UINT16_LONGEST_STR) - 1);
             pos = append_port(pos, req->conn->callbacks->get_peername, req->conn, nullexpr);
             break;
-        case ELEMENT_TYPE_ENV_VAR:  /* %{..}e */  {
+        case ELEMENT_TYPE_ENV_VAR: /* %{..}e */ {
             h2o_iovec_t *env_var = h2o_req_getenv(req, element->data.name.base, element->data.name.len, 0);
             if (env_var == NULL)
                 goto EmitNull;
             RESERVE(env_var->len * unsafe_factor);
             pos = append_safe_string(pos, env_var->base, env_var->len);
-            } break;
+        } break;
         case ELEMENT_TYPE_QUERY: /* %q */
             if (req->input.query_at != SIZE_MAX) {
                 size_t len = req->input.path.len - req->input.query_at;
@@ -573,6 +587,8 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             }
             break;
         case ELEMENT_TYPE_REQUEST_LINE: /* %r */
+            if (req->version == 0)
+                goto EmitNull;
             RESERVE((req->input.method.len + req->input.path.len) * unsafe_factor + sizeof("  HTTP/1.1"));
             pos = append_unsafe_string(pos, req->input.method.base, req->input.method.len);
             *pos++ = ' ';
@@ -581,6 +597,8 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             pos += h2o_stringify_protocol_version(pos, req->version);
             break;
         case ELEMENT_TYPE_STATUS: /* %s */
+            if (req->res.status == 0)
+                goto EmitNull;
             RESERVE(sizeof(H2O_INT32_LONGEST_STR) - 1);
             pos += sprintf(pos, "%" PRId32, (int32_t)(element->original_response ? req->res.original.status : req->res.status));
             break;
@@ -640,6 +658,8 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             pos += sprintf(pos, "%06u", (unsigned)req->processed_at.at.tv_usec);
             break;
         case ELEMENT_TYPE_URL_PATH: /* %U */ {
+            if (req->input.path.len == 0)
+                goto EmitNull;
             size_t path_len = req->input.query_at == SIZE_MAX ? req->input.path.len : req->input.query_at;
             RESERVE(path_len * unsafe_factor);
             pos = append_unsafe_string(pos, req->input.path.base, path_len);
@@ -733,23 +753,38 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             APPEND_DURATION(pos, response_time);
             break;
 
-        case ELEMENT_TYPE_DURATION:
-            APPEND_DURATION(pos, duration);
+        case ELEMENT_TYPE_TOTAL_TIME:
+            APPEND_DURATION(pos, total_time);
             break;
 
-        case ELEMENT_TYPE_ERROR: {
-            size_t i;
-            for (i = 0; i != req->error_logs.size; ++i) {
-                h2o_req_error_log_t *log = req->error_logs.entries + i;
-                size_t module_len = strlen(log->module);
-                RESERVE(sizeof("[] ") - 1 + module_len + log->msg.len * unsafe_factor);
-                *pos++ = '[';
-                pos = append_safe_string(pos, log->module, module_len);
-                *pos++ = ']';
-                *pos++ = ' ';
-                pos = append_unsafe_string(pos, log->msg.base, log->msg.len);
-            }
-        } break;
+        case ELEMENT_TYPE_ERROR:
+            if (req->error_logs != NULL)
+                pos = append_unsafe_string(pos, req->error_logs->bytes, req->error_logs->size);
+            break;
+
+        case ELEMENT_TYPE_PROXY_IDLE_TIME:
+            APPEND_DURATION(pos, proxy_idle_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_CONNECT_TIME:
+            APPEND_DURATION(pos, proxy_connect_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_REQUEST_TIME:
+            APPEND_DURATION(pos, proxy_request_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_PROCESS_TIME:
+            APPEND_DURATION(pos, proxy_process_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_RESPONSE_TIME:
+            APPEND_DURATION(pos, proxy_response_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_TOTAL_TIME:
+            APPEND_DURATION(pos, proxy_total_time);
+            break;
 
         case ELEMENT_TYPE_PROTOCOL_SPECIFIC: {
             h2o_iovec_t (*cb)(h2o_req_t *) = req->conn->callbacks->log_.callbacks[element->data.protocol_specific_callback_index];

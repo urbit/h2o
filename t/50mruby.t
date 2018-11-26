@@ -78,6 +78,8 @@ EOT
         ($headers, $body) = $fetch->("/fallthru/");
         like $headers, qr{^HTTP/1\.1 200 OK\r\n}is;
         is md5_hex($body), md5_file("t/50mruby/index.html");
+        my @dates = $headers =~ /^date: .+?\r$/img;
+        is scalar(@dates), 1, 'duplicate date header';
     };
     subtest "echo" => sub {
         ($headers, $body) = $fetch->("/echo/abc?def");
@@ -426,13 +428,14 @@ $conf
 error-log: $tempdir/error_log
 EOT
             run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+            undef $server; # wait for the server to terminate
             my @log = do {
                 open my $fh, "<", "$tempdir/error_log"
                     or die "failed to open error_log:$!";
                 map { my $l = $_; chomp $l; $l } <$fh>;
             };
             @log = grep { $_ =~ /^\[h2o_mruby\]/ } @log;
-            like $log[$#log], qr{\[h2o_mruby\] in request:/:mruby raised: @{[$server->{conf_file}]}:$expected:\s*hoge \(RuntimeError\)};
+            like $log[$#log], qr{\[h2o_mruby\] in request:/:mruby raised: .*:$expected:\s*hoge \(RuntimeError\)};
         };
     };
     $tester->("flow style", <<"EOT", 5);
@@ -452,6 +455,60 @@ hosts:
             raise "hoge"
           end
 EOT
+};
+
+subtest 'namespace' => sub {
+    subtest 'modules and classes are defined under top_self (not under Kernel)' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          module Foo
+          end
+          class Bar
+          end
+          proc {|env|
+            [200, {}, ["#{Foo.name},#{Bar.name}"]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "Foo,Bar";
+    };
+    subtest 'require works as the same' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          \$LOAD_PATH << '@{[ ASSETS_DIR . '/mruby' ]}'
+          require 'namespace'
+          proc {|env|
+            [200, {}, ["#{Foo.name},#{Bar.name}"]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "Foo,Bar";
+    };
+    subtest 'self must be top_self' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          proc {|env|
+            [200, {}, [self.to_s]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "main";
+    };
 };
 
 subtest 'response with specific statuses should not contain content-length header' => sub {
@@ -536,6 +593,73 @@ EOT
 
     (undef, $body) = $nc->('');
     is $body, 'handler1, , ', 'empty path';
+};
+
+subtest 'invalid response' => sub {
+    my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          proc {|env| eval([env["QUERY_STRING"]].pack("H*")) }
+EOT
+    run_with_curl($server, sub {
+        my ($proto, $port, $curl) = @_;
+        my $fetch = sub {
+            run_prog("$curl --silent --dump-header /dev/stderr -m 1 $proto://127.0.0.1:$port/?@{[unpack 'H*', $_[0]]}");
+        };
+        my ($headers, $body) = $fetch->('[200, {}, ["hello world"]]');
+        subtest "verify the methodology" => sub {
+            like $headers, qr{^HTTP/[0-9.]+ 200 }is;
+            is $body, "hello world";
+        };
+        ($headers, $body) = $fetch->('nil');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'nil';
+        ($headers, $body) = $fetch->('["200", {}, []]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'invalid status';
+        ($headers, $body) = $fetch->('[200]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'no headers';
+        ($headers, $body) = $fetch->('[200, nil, nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'nil headers';
+        ($headers, $body) = $fetch->('[200, "abc", nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'invalid headers';
+        ($headers, $body) = $fetch->('[200, {}]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'no body';
+        is $body, "";
+        ($headers, $body) = $fetch->('[200, {}, nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'nil body';
+        is $body, "";
+        ($headers, $body) = $fetch->('[200, {}, "abc"]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'invalid body';
+        is $body, "";
+    });
+};
+
+subtest 'rack.early_hints' => sub {
+    my $server = spawn_h2o(<< "EOT");
+send-informational: all
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          proc {|env|
+            env['rack.early_hints'].call({ 'link' => "</index.js>; rel=preload\\n</style.css>; rel=preload" })
+            sleep 0.1
+            env['rack.early_hints'].call({ :foo => 'bar' })
+            [200, {}, ['hello']]
+          }
+EOT
+    run_with_curl($server, sub {
+        my ($proto, $port, $curl) = @_;
+        my ($headers) = run_prog("$curl --silent --dump-header /dev/stderr -m 1 $proto://127.0.0.1:$port/");
+        like $headers, qr{^link: </index.js>; rel=preload\r$}m;
+        like $headers, qr{^link: </style.css>; rel=preload\r$}m;
+        like $headers, qr{^foo: bar\r$}m;
+    });
 };
 
 done_testing();

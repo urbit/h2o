@@ -30,7 +30,7 @@ sub doit {
         my $upstream = spawn_server(
             argv => [
                 qw(plackup -s FCGI --access-log /dev/null --listen),
-                ($tcp ? ":$fcgi_port" : "$tempdir/fcgi.sock"),
+                ($tcp ? "127.0.0.1:$fcgi_port" : "$tempdir/fcgi.sock"),
                 ASSETS_DIR . "/upstream.psgi",
             ],
             is_ready => sub {
@@ -92,6 +92,7 @@ doit(1, 0);
 doit(0, 1);
 doit(1, 1);
 
+# see https://httpoxy.org
 subtest 'httpoxy' => sub {
     my $doit = sub {
         my ($drop, $cb) = @_;
