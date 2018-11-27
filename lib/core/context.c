@@ -104,15 +104,21 @@ void h2o_context_init(h2o_context_t *ctx, h2o_loop_t *loop, h2o_globalconf_t *co
     h2o_linklist_init_anchor(&ctx->http2._conns);
     ctx->proxy.client_ctx.loop = loop;
     h2o_timeout_init(ctx->loop, &ctx->proxy.io_timeout, config->proxy.io_timeout);
+    h2o_timeout_init(ctx->loop, &ctx->proxy.connect_timeout, config->proxy.connect_timeout);
+    h2o_timeout_init(ctx->loop, &ctx->proxy.first_byte_timeout, config->proxy.first_byte_timeout);
     ctx->proxy.client_ctx.getaddr_receiver = &ctx->receivers.hostinfo_getaddr;
     ctx->proxy.client_ctx.io_timeout = &ctx->proxy.io_timeout;
-    ctx->proxy.client_ctx.ssl_ctx = config->proxy.ssl_ctx;
+    ctx->proxy.client_ctx.connect_timeout = &ctx->proxy.connect_timeout;
+    ctx->proxy.client_ctx.first_byte_timeout = &ctx->proxy.first_byte_timeout;
 
     ctx->_module_configs = h2o_mem_alloc(sizeof(*ctx->_module_configs) * config->_num_config_slots);
     memset(ctx->_module_configs, 0, sizeof(*ctx->_module_configs) * config->_num_config_slots);
 
     static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mutex);
+
+    h2o_socketpool_register_loop(&ctx->globalconf->proxy.global_socketpool, loop);
+
     for (i = 0; config->hosts[i] != NULL; ++i) {
         h2o_hostconf_t *hostconf = config->hosts[i];
         for (j = 0; j != hostconf->paths.size; ++j) {
@@ -121,6 +127,7 @@ void h2o_context_init(h2o_context_t *ctx, h2o_loop_t *loop, h2o_globalconf_t *co
         }
         h2o_context_init_pathconf_context(ctx, &hostconf->fallback_path);
     }
+
     pthread_mutex_unlock(&mutex);
 }
 
@@ -128,6 +135,8 @@ void h2o_context_dispose(h2o_context_t *ctx)
 {
     h2o_globalconf_t *config = ctx->globalconf;
     size_t i, j;
+
+    h2o_socketpool_unregister_loop(&ctx->globalconf->proxy.global_socketpool, ctx->loop);
 
     for (i = 0; config->hosts[i] != NULL; ++i) {
         h2o_hostconf_t *hostconf = config->hosts[i];
@@ -147,6 +156,8 @@ void h2o_context_dispose(h2o_context_t *ctx)
     h2o_timeout_dispose(ctx->loop, &ctx->http2.idle_timeout);
     h2o_timeout_dispose(ctx->loop, &ctx->http2.graceful_shutdown_timeout);
     h2o_timeout_dispose(ctx->loop, &ctx->proxy.io_timeout);
+    h2o_timeout_dispose(ctx->loop, &ctx->proxy.connect_timeout);
+    h2o_timeout_dispose(ctx->loop, &ctx->proxy.first_byte_timeout);
     /* what should we do here? assert(!h2o_linklist_is_empty(&ctx->http2._conns); */
 
     h2o_filecache_destroy(ctx->filecache);
@@ -183,19 +194,13 @@ void h2o_context_request_shutdown(h2o_context_t *ctx)
         ctx->globalconf->http2.callbacks.request_shutdown(ctx);
 }
 
-void h2o_context_update_timestamp_cache(h2o_context_t *ctx)
+void h2o_context_update_timestamp_string_cache(h2o_context_t *ctx)
 {
-    time_t prev_sec = ctx->_timestamp_cache.tv_at.tv_sec;
-    ctx->_timestamp_cache.uv_now_at = h2o_now(ctx->loop);
-    gettimeofday(&ctx->_timestamp_cache.tv_at, NULL);
-    if (ctx->_timestamp_cache.tv_at.tv_sec != prev_sec) {
-        struct tm gmt;
-        /* update the string cache */
-        if (ctx->_timestamp_cache.value != NULL)
-            h2o_mem_release_shared(ctx->_timestamp_cache.value);
-        ctx->_timestamp_cache.value = h2o_mem_alloc_shared(NULL, sizeof(h2o_timestamp_string_t), NULL);
-        gmtime_r(&ctx->_timestamp_cache.tv_at.tv_sec, &gmt);
-        h2o_time2str_rfc1123(ctx->_timestamp_cache.value->rfc1123, &gmt);
-        h2o_time2str_log(ctx->_timestamp_cache.value->log, ctx->_timestamp_cache.tv_at.tv_sec);
-    }
+    struct tm gmt;
+    if (ctx->_timestamp_cache.value != NULL)
+        h2o_mem_release_shared(ctx->_timestamp_cache.value);
+    ctx->_timestamp_cache.value = h2o_mem_alloc_shared(NULL, sizeof(h2o_timestamp_string_t), NULL);
+    gmtime_r(&ctx->_timestamp_cache.tv_at.tv_sec, &gmt);
+    h2o_time2str_rfc1123(ctx->_timestamp_cache.value->rfc1123, &gmt);
+    h2o_time2str_log(ctx->_timestamp_cache.value->log, ctx->_timestamp_cache.tv_at.tv_sec);
 }

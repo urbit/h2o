@@ -7,7 +7,7 @@ use t::Util;
 plan skip_all => 'plackup not found'
     unless prog_exists('plackup');
 
-my $upstream_port = empty_port();
+my $upstream_port = empty_port({ host => '0.0.0.0' });
 my $upstream = spawn_server(
     argv => [
         qw(
@@ -65,6 +65,33 @@ EOT
         like $resp, qr{^HTTP/[^ ]* 200}im;
         like $resp, qr{^hello$}m;
     });
+};
+
+subtest "preserve.host" => sub {
+    my $doit = sub {
+        my $flag = shift;
+        my $server = spawn_h2o(<< "EOT");
+proxy.ssl.verify-peer: OFF
+proxy.preserve-host: @{[ $flag ? "ON" : "OFF" ]}
+hosts:
+  default:
+    paths:
+      "/":
+        proxy.reverse.url: https://127.0.0.1:$upstream_port
+EOT
+
+        run_with_curl($server, sub {
+            my ($proto, $port, $curl) = @_;
+            my $resp = `$curl --silent $proto://2130706433:$port/sni-name`;
+            is $resp, "127.0.0.1";
+        });
+    };
+    subtest "off" => sub {
+        $doit->(0);
+    };
+    subtest "on" => sub {
+        $doit->(1);
+    };
 };
 
 done_testing();

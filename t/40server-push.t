@@ -37,6 +37,12 @@ hosts:
             [399, { "link" => "</index.txt.gz>; rel=preload" }, [] ]
           end
         proxy.reverse.url: http://127.0.0.1:$upstream_port
+      /mruby-critical:
+        mruby.handler: |
+          Proc.new do |env|
+            [399, { "link" => "</assets/halfdome.jpg?1>; rel=preload, </assets/halfdome.jpg?2>; rel=preload, </assets/halfdome.jpg?3>; rel=preload; critical," }, [] ]
+          end
+        proxy.reverse.url: http://127.0.0.1:$upstream_port
       /assets:
         file.dir: @{[DOC_ROOT]}
 EOT
@@ -48,7 +54,8 @@ EOT
             like $resp, qr{\nid\s*responseEnd\s.*\s/assets/index\.js\n.*\s/index\.txt\?}is;
         };
         subtest 'push-unprioritized' => sub {
-            my $resp = `nghttp $opts -n --stat '$proto://127.0.0.1:$port/index.txt?resp:link=</index.txt.gz>\%3b\%20rel=preload'`;
+            # index.txt is smaller than index.txt.gz, hence receiving the former always completes first
+            my $resp = `nghttp $opts -n --stat -w 1 '$proto://127.0.0.1:$port/index.txt?resp:link=</index.txt.gz>\%3b\%20rel=preload'`;
             like $resp, qr{\nid\s*responseEnd\s.*\s/index\.txt\?.*\s/index\.txt.gz\n}is;
         };
         subtest "push-1xx" => sub {
@@ -58,12 +65,16 @@ EOT
             chomp $out;
             my @responses = split /\n/, $out;
             is scalar(@responses), 2, "2 responses";
-            like $responses[0], qr{\+[0-9]{1,2}\.[0-9]*ms .* /index.js$}, "index.js arrives < 100ms";
-            like $responses[1], qr{\+1\.[0-9]*s .* /1xx-push/$}, "/1xx-push/ arrives >= 1sec";
+            like $responses[0], qr{\+[0-9]{1,2}\.[0-9]*ms.*\s+200\s+[0-9]+\s+/index.js$}, "index.js arrives < 100ms";
+            like $responses[1], qr{\+1\.[0-9]*s.*\s+200\s+[0-9]+\s+/1xx-push/$}, "/1xx-push/ arrives >= 1sec";
         };
         subtest 'push-while-sleep' => sub {
             my $resp = `nghttp $opts -n --stat '$proto://127.0.0.1:$port/mruby/sleep-and-respond?sleep=1'`;
             like $resp, qr{\nid\s*responseEnd\s.*\s/index\.txt\.gz\n.*\s/mruby/sleep-and-respond}is;
+        };
+        subtest 'push-critical' => sub {
+            my $resp = `nghttp $opts -n --stat '$proto://127.0.0.1:$port/mruby-critical/sleep-and-respond?sleep=1'`;
+            like $resp, qr{\nid\s*responseEnd\s.*\s/assets/halfdome\.jpg\?3\n.*\s/assets/halfdome\.jpg\?[12]\n.*\s/assets/halfdome\.jpg\?[12]\n.*\s/mruby-critical/sleep-and-respond}is;
         };
     };
 

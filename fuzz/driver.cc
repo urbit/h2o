@@ -37,8 +37,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/select.h>
-#include <wait.h>
-#include <malloc.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -111,7 +110,7 @@ struct writer_thread_arg {
     char *buf;
     size_t len;
     int fd;
-    pthread_barrier_t barrier;
+    h2o_barrier_t barrier;
 };
 
 /*
@@ -158,6 +157,7 @@ static void write_fully(int fd, char *buf, size_t len, int abort_on_err)
     "Connection: Close\r\n\r\nOk"
 #define OK_RESP_LEN (sizeof(OK_RESP) - 1)
 
+static h2o_barrier_t init_barrier;
 void *upstream_thread(void *arg)
 {
     char *dirname = (char *)arg;
@@ -165,17 +165,24 @@ void *upstream_thread(void *arg)
     char rbuf[1 * 1024 * 1024];
     snprintf(path, sizeof(path), "/%s/_.sock", dirname);
     int sd = socket(AF_UNIX, SOCK_STREAM, 0);
-    assert(sd >= 0);
+    if (sd < 0) {
+        abort();
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    assert(bind(sd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
-    assert(listen(sd, 100) == 0);
+    if (bind(sd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        abort();
+    }
+    if (listen(sd, 100) != 0) {
+        abort();
+    }
 
+    h2o_barrier_wait(&init_barrier);
     while (1) {
         struct sockaddr_un caddr;
-        socklen_t slen;
+        socklen_t slen = 0;
         int cfs = accept(sd, (struct sockaddr *)&caddr, &slen);
         if (cfs < 0) {
             continue;
@@ -246,7 +253,8 @@ void *writer_thread(void *arg)
             }
         }
         close(wta->fd);
-        pthread_barrier_wait(&wta->barrier);
+        h2o_barrier_wait(&wta->barrier);
+        h2o_barrier_destroy(&wta->barrier);
         free(wta);
     }
 }
@@ -255,7 +263,7 @@ void *writer_thread(void *arg)
  * Creates socket pair and passes fuzzed req to a thread (the HTTP[/2] client)
  * for writing to the target h2o server. Returns the server socket fd.
  */
-static int feeder(int sfd, char *buf, size_t len, pthread_barrier_t **barrier)
+static int feeder(int sfd, char *buf, size_t len, h2o_barrier_t **barrier)
 {
     int pair[2];
     struct writer_thread_arg *wta;
@@ -267,7 +275,7 @@ static int feeder(int sfd, char *buf, size_t len, pthread_barrier_t **barrier)
     wta->fd = pair[0];
     wta->buf = buf;
     wta->len = len;
-    pthread_barrier_init(&wta->barrier, NULL, 2);
+    h2o_barrier_init(&wta->barrier, 2);
     *barrier = &wta->barrier;
 
     write_fully(sfd, (char *)&wta, sizeof(wta), 1);
@@ -279,15 +287,17 @@ static int feeder(int sfd, char *buf, size_t len, pthread_barrier_t **barrier)
  * fuzzed request to client for sending.
  * Returns server socket fd.
  */
-static int create_accepted(int sfd, char *buf, size_t len, pthread_barrier_t **barrier)
+static int create_accepted(int sfd, char *buf, size_t len, h2o_barrier_t **barrier)
 {
     int fd;
     h2o_socket_t *sock;
-    struct timeval connected_at = *h2o_get_timestamp(&ctx, NULL, NULL);
+    struct timeval connected_at = h2o_gettimeofday(ctx.loop);
 
     /* Create an HTTP[/2] client that will send the fuzzed request */
     fd = feeder(sfd, buf, len, barrier);
-    assert(fd >= 0);
+    if (fd < 0) {
+        abort();
+    }
 
     /* Pass the server socket to h2o and invoke request processing */
     sock = h2o_evloop_socket_create(ctx.loop, fd, H2O_SOCKET_FLAG_IS_ACCEPTED_CONNECTION);
@@ -331,6 +341,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         static char tmpname[] = "/tmp/h2o-fuzz-XXXXXX";
         char *dirname;
         h2o_url_t upstream;
+        h2o_barrier_init(&init_barrier, 2);
         signal(SIGPIPE, SIG_IGN);
 
         dirname = mkdtemp(tmpname);
@@ -350,8 +361,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         hostconf = h2o_config_register_host(&config, h2o_iovec_init(H2O_STRLIT(unix_listener)), 65535);
         register_handler(hostconf, "/chunked-test", chunked_test);
         h2o_url_parse(unix_listener, strlen(unix_listener), &upstream);
-        void h2o_proxy_register_reverse_proxy(h2o_pathconf_t * pathconf, h2o_url_t * upstream, h2o_proxy_config_vars_t * config);
-        h2o_proxy_register_reverse_proxy(h2o_config_register_path(hostconf, "/reproxy-test", 0), &upstream, &proxy_config);
+        h2o_socketpool_t *sockpool = new h2o_socketpool_t();
+        h2o_socketpool_target_t *target = h2o_socketpool_create_target(&upstream, NULL);
+        h2o_socketpool_init_specific(sockpool, SIZE_MAX /* FIXME */, &target, 1, NULL);
+        h2o_socketpool_set_timeout(sockpool, 2000);
+        h2o_socketpool_set_ssl_ctx(sockpool, NULL);
+        h2o_proxy_register_reverse_proxy(h2o_config_register_path(hostconf, "/reproxy-test", 0), &proxy_config, sockpool);
         h2o_file_register(h2o_config_register_path(hostconf, "/", 0), "./examples/doc_root", NULL, NULL, 0);
 
         loop = h2o_evloop_create();
@@ -361,9 +376,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         accept_ctx.hosts = config.hosts;
 
         /* Create a thread to act as the HTTP client */
-        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, job_queue) == 0);
-        assert(pthread_create(&twriter, NULL, writer_thread, (void *)(long)job_queue[1]) == 0);
-        assert(pthread_create(&tupstream, NULL, upstream_thread, dirname) == 0);
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, job_queue) != 0) {
+            abort();
+        }
+        if (pthread_create(&twriter, NULL, writer_thread, (void *)(long)job_queue[1]) != 0) {
+            abort();
+        }
+        if (pthread_create(&tupstream, NULL, upstream_thread, dirname) != 0) {
+            abort();
+        }
+        h2o_barrier_wait(&init_barrier);
         init_done = 1;
     }
 
@@ -371,7 +393,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
      * Pass fuzzed request to client thread and get h2o server socket for
      * use below
      */
-    pthread_barrier_t *end;
+    h2o_barrier_t *end;
     c = create_accepted(job_queue[0], (char *)Data, (size_t)Size, &end);
     if (c < 0) {
         goto Error;
@@ -382,8 +404,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         h2o_evloop_run(ctx.loop, 10);
     }
 
-    pthread_barrier_wait(end);
-    pthread_barrier_destroy(end);
+    h2o_barrier_wait(end);
     return 0;
 Error:
     return 1;

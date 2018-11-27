@@ -454,6 +454,60 @@ hosts:
 EOT
 };
 
+subtest 'namespace' => sub {
+    subtest 'modules and classes are defined under top_self (not under Kernel)' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          module Foo
+          end
+          class Bar
+          end
+          proc {|env|
+            [200, {}, ["#{Foo.name},#{Bar.name}"]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "Foo,Bar";
+    };
+    subtest 'require works as the same' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          \$LOAD_PATH << '@{[ ASSETS_DIR . '/mruby' ]}'
+          require 'namespace'
+          proc {|env|
+            [200, {}, ["#{Foo.name},#{Bar.name}"]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "Foo,Bar";
+    };
+    subtest 'self must be top_self' => sub {
+        my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          proc {|env|
+            [200, {}, [self.to_s]]
+          }
+EOT
+        (undef, my $body) = run_prog("curl --silent --dump-header /dev/stderr http://127.0.0.1:$server->{port}/");
+        is $body, "main";
+    };
+};
+
 subtest 'response with specific statuses should not contain content-length header' => sub {
     my $server = spawn_h2o(<< "EOT");
 num-threads: 1
@@ -536,6 +590,48 @@ EOT
 
     (undef, $body) = $nc->('');
     is $body, 'handler1, , ', 'empty path';
+};
+
+subtest 'invalid response' => sub {
+    my $server = spawn_h2o(<< "EOT");
+num-threads: 1
+hosts:
+  default:
+    paths:
+      /:
+        mruby.handler: |
+          proc {|env| eval([env["QUERY_STRING"]].pack("H*")) }
+EOT
+    run_with_curl($server, sub {
+        my ($proto, $port, $curl) = @_;
+        my $fetch = sub {
+            run_prog("$curl --silent --dump-header /dev/stderr -m 1 $proto://127.0.0.1:$port/?@{[unpack 'H*', $_[0]]}");
+        };
+        my ($headers, $body) = $fetch->('[200, {}, ["hello world"]]');
+        subtest "verify the methodology" => sub {
+            like $headers, qr{^HTTP/[0-9.]+ 200 }is;
+            is $body, "hello world";
+        };
+        ($headers, $body) = $fetch->('nil');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'nil';
+        ($headers, $body) = $fetch->('["200", {}, []]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'invalid status';
+        ($headers, $body) = $fetch->('[200]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'no headers';
+        ($headers, $body) = $fetch->('[200, nil, nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'nil headers';
+        ($headers, $body) = $fetch->('[200, "abc", nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 500 }is, 'invalid headers';
+        ($headers, $body) = $fetch->('[200, {}]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'no body';
+        is $body, "";
+        ($headers, $body) = $fetch->('[200, {}, nil]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'nil body';
+        is $body, "";
+        ($headers, $body) = $fetch->('[200, {}, "abc"]');
+        like $headers, qr{^HTTP/[0-9.]+ 200 }is, 'invalid body';
+        is $body, "";
+    });
 };
 
 done_testing();
