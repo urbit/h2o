@@ -142,18 +142,18 @@ static h2o_iovec_t convert_env_to_header_name(h2o_mem_pool_t *pool, const char *
 #undef KEY_PREFIX_LEN
 }
 
-static int iterate_headers_callback(h2o_mruby_shared_context_t *shared_ctx, h2o_mem_pool_t *pool, h2o_iovec_t *name,
-                                    h2o_iovec_t value, void *cb_data)
+static int iterate_headers_callback(h2o_mruby_shared_context_t *shared_ctx, h2o_mem_pool_t *pool, h2o_header_t *header,
+                                    void *cb_data)
 {
     mrb_value result_hash = mrb_obj_value(cb_data);
     mrb_value n;
-    if (h2o_iovec_is_token(name)) {
-        const h2o_token_t *token = H2O_STRUCT_FROM_MEMBER(h2o_token_t, buf, name);
+    if (h2o_iovec_is_token(header->name)) {
+        const h2o_token_t *token = H2O_STRUCT_FROM_MEMBER(h2o_token_t, buf, header->name);
         n = h2o_mruby_token_string(shared_ctx, token);
     } else {
-        n = h2o_mruby_new_str(shared_ctx->mrb, name->base, name->len);
+        n = h2o_mruby_new_str(shared_ctx->mrb, header->name->base, header->name->len);
     }
-    mrb_value v = h2o_mruby_new_str(shared_ctx->mrb, value.base, value.len);
+    mrb_value v = h2o_mruby_new_str(shared_ctx->mrb, header->value.base, header->value.len);
     mrb_hash_set(shared_ctx->mrb, result_hash, n, v);
     return 0;
 }
@@ -318,6 +318,7 @@ static socklen_t parse_hostport(h2o_mem_pool_t *pool, h2o_iovec_t host, h2o_iove
             parsed_len == host.len && d1 <= UCHAR_MAX && d2 <= UCHAR_MAX && d3 <= UCHAR_MAX && d4 <= UCHAR_MAX) {
             if (sscanf(port.base, "%" SCNd32 "%n", &_port, &parsed_len) == 1 && parsed_len == port.len && _port <= USHRT_MAX) {
                 struct sockaddr_in sin;
+                memset(&sin, 0, sizeof(sin));
                 sin.sin_family = AF_INET;
                 sin.sin_port = htons(_port);
                 sin.sin_addr.s_addr = ntohl((d1 << 24) + (d2 << 16) + (d3 << 8) + d4);
@@ -486,7 +487,6 @@ static struct st_mruby_subreq_t *create_subreq(h2o_mruby_context_t *ctx, mrb_val
     /* initialize super and conn */
     subreq->conn.super.ctx = ctx->shared->ctx;
     h2o_init_request(&subreq->super, &subreq->conn.super, NULL);
-    subreq->super.is_subrequest = 1;
     h2o_ostream_t *ostream = h2o_add_ostream(&subreq->super, H2O_ALIGNOF(*ostream), sizeof(*ostream), &subreq->super._ostr_top);
     ostream->do_send = subreq_ostream_send;
     subreq->conn.super.hosts = ctx->handler->pathconf->global->hosts;

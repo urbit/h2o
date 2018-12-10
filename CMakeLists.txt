@@ -38,6 +38,7 @@ SET(LIBRARY_SOVERSION "${LIBRARY_VERSION_MAJOR}.${LIBRARY_VERSION_MINOR}")
 INCLUDE(GNUInstallDirs)
 INCLUDE(CheckCSourceCompiles)
 INCLUDE(CMakePushCheckState)
+INCLUDE(ExternalProject)
 
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in ${CMAKE_CURRENT_SOURCE_DIR}/include/h2o/version.h)
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/libh2o.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libh2o.pc @ONLY)
@@ -278,6 +279,8 @@ SET(LIB_SOURCE_FILES
     lib/common/filecache.c
     lib/common/hostinfo.c
     lib/common/http1client.c
+    lib/common/http2client.c
+    lib/common/httpclient.c
     lib/common/memcached.c
     lib/common/memory.c
     lib/common/multithread.c
@@ -287,7 +290,8 @@ SET(LIB_SOURCE_FILES
     lib/common/socketpool.c
     lib/common/string.c
     lib/common/time.c
-    lib/common/timeout.c
+    lib/common/timerwheel.c
+    lib/common/token.c
     lib/common/url.c
     lib/common/balancer/roundrobin.c
     lib/common/balancer/least_conn.c
@@ -299,11 +303,9 @@ SET(LIB_SOURCE_FILES
     lib/core/logconf.c
     lib/core/proxy.c
     lib/core/request.c
-    lib/core/token.c
     lib/core/util.c
 
     lib/handler/access_log.c
-    lib/handler/chunked.c
     lib/handler/compress.c
     lib/handler/compress/gzip.c
     lib/handler/errordoc.c
@@ -321,6 +323,7 @@ SET(LIB_SOURCE_FILES
     lib/handler/headers_util.c
     lib/handler/status/events.c
     lib/handler/status/requests.c
+    lib/handler/status/ssl.c
     lib/handler/http2_debug_state.c
     lib/handler/status/durations.c
     lib/handler/configurator/access_log.c
@@ -362,12 +365,14 @@ SET(UNIT_TEST_SOURCE_FILES
     t/00unit/lib/common/balancer/roundrobin.c
     t/00unit/lib/common/cache.c
     t/00unit/lib/common/hostinfo.c
+    t/00unit/lib/common/httpclient.c
     t/00unit/lib/common/multithread.c
     t/00unit/lib/common/serverutil.c
     t/00unit/lib/common/socket.c
     t/00unit/lib/common/string.c
     t/00unit/lib/common/time.c
     t/00unit/lib/common/url.c
+    t/00unit/lib/common/timerwheel.c
     t/00unit/lib/core/headers.c
     t/00unit/lib/core/proxy.c
     t/00unit/lib/core/util.c
@@ -384,16 +389,19 @@ SET(UNIT_TEST_SOURCE_FILES
     t/00unit/src/ssl.c
     t/00unit/issues/293.c
     t/00unit/issues/percent-encode-zero-byte.c)
+
 LIST(REMOVE_ITEM UNIT_TEST_SOURCE_FILES
     lib/common/balancer/least_conn.c
     lib/common/balancer/roundrobin.c
     lib/common/cache.c
     lib/common/hostinfo.c
+    lib/common/httpclient.c
     lib/common/multithread.c
     lib/common/serverutil.c
     lib/common/socket.c
     lib/common/string.c
     lib/common/time.c
+    lib/common/timerwheel.c
     lib/common/url.c
     lib/core/headers.c
     lib/core/proxy.c
@@ -456,29 +464,29 @@ ELSE ()
     SET_TARGET_PROPERTIES(libh2o-evloop PROPERTIES EXCLUDE_FROM_ALL 1)
 ENDIF()
 
-ADD_CUSTOM_TARGET(lib-examples DEPENDS examples-http1client examples-simple examples-socket-client)
+ADD_CUSTOM_TARGET(lib-examples DEPENDS examples-httpclient examples-simple examples-socket-client)
 IF (WSLAY_FOUND)
     ADD_DEPENDENCIES(lib-examples examples-websocket)
 ENDIF (WSLAY_FOUND)
-ADD_EXECUTABLE(examples-http1client examples/libh2o/http1client.c)
+ADD_EXECUTABLE(examples-httpclient examples/libh2o/httpclient.c)
 ADD_EXECUTABLE(examples-socket-client examples/libh2o/socket-client.c)
 ADD_EXECUTABLE(examples-simple examples/libh2o/simple.c)
 ADD_EXECUTABLE(examples-websocket lib/websocket.c examples/libh2o/websocket.c)
 
-ADD_CUSTOM_TARGET(lib-examples-evloop DEPENDS examples-http1client-evloop examples-simple-evloop examples-socket-client-evloop examples-latency-optimization-evloop)
+ADD_CUSTOM_TARGET(lib-examples-evloop DEPENDS examples-httpclient-evloop examples-simple-evloop examples-socket-client-evloop examples-latency-optimization-evloop)
 IF (WSLAY_FOUND)
     ADD_DEPENDENCIES(lib-examples-evloop examples-websocket-evloop)
 ENDIF (WSLAY_FOUND)
 ADD_EXECUTABLE(examples-latency-optimization-evloop examples/libh2o/latency-optimization.c)
-ADD_EXECUTABLE(examples-http1client-evloop examples/libh2o/http1client.c)
+ADD_EXECUTABLE(examples-httpclient-evloop examples/libh2o/httpclient.c)
 ADD_EXECUTABLE(examples-socket-client-evloop examples/libh2o/socket-client.c)
 ADD_EXECUTABLE(examples-simple-evloop examples/libh2o/simple.c)
 ADD_EXECUTABLE(examples-websocket-evloop lib/websocket.c examples/libh2o/websocket.c)
 
 
-SET_TARGET_PROPERTIES(examples-http1client PROPERTIES
+SET_TARGET_PROPERTIES(examples-httpclient PROPERTIES
     EXCLUDE_FROM_ALL 1)
-TARGET_LINK_LIBRARIES(examples-http1client libh2o ${LIBUV_LIBRARIES} ${EXTRA_LIBS})
+TARGET_LINK_LIBRARIES(examples-httpclient libh2o ${LIBUV_LIBRARIES} ${EXTRA_LIBS})
 
 SET_TARGET_PROPERTIES(examples-socket-client PROPERTIES
     EXCLUDE_FROM_ALL 1)
@@ -497,10 +505,10 @@ SET_TARGET_PROPERTIES(examples-latency-optimization-evloop PROPERTIES
     EXCLUDE_FROM_ALL 1)
 TARGET_LINK_LIBRARIES(examples-latency-optimization-evloop libh2o-evloop ${EXTRA_LIBS})
 
-SET_TARGET_PROPERTIES(examples-http1client-evloop PROPERTIES
+SET_TARGET_PROPERTIES(examples-httpclient-evloop PROPERTIES
     COMPILE_FLAGS "-DH2O_USE_LIBUV=0"
     EXCLUDE_FROM_ALL 1)
-TARGET_LINK_LIBRARIES(examples-http1client-evloop libh2o-evloop ${EXTRA_LIBS})
+TARGET_LINK_LIBRARIES(examples-httpclient-evloop libh2o-evloop ${EXTRA_LIBS})
 
 SET_TARGET_PROPERTIES(examples-socket-client-evloop PROPERTIES
     COMPILE_FLAGS "-DH2O_USE_LIBUV=0"
@@ -560,7 +568,7 @@ IF (WITH_MRUBY)
     # note: the paths need to be determined before libmruby.flags.mak is generated
     TARGET_LINK_LIBRARIES(h2o
         "${CMAKE_CURRENT_BINARY_DIR}/mruby/host/lib/libmruby.a"
-        "${CMAKE_CURRENT_BINARY_DIR}/mruby/host/mrbgems/mruby-onig-regexp/onigmo-6.1.1/.libs/libonigmo.a"
+        "${CMAKE_CURRENT_BINARY_DIR}/mruby/host/mrbgems/mruby-onig-regexp/onigmo-6.1.2/.libs/libonigmo.a"
         "m")
     ADD_DEPENDENCIES(h2o mruby)
 ENDIF (WITH_MRUBY)
@@ -595,6 +603,23 @@ SET_TARGET_PROPERTIES(t-00unit-evloop.t PROPERTIES
     COMPILE_FLAGS "-DH2O_USE_LIBUV=0 -DH2O_USE_BROTLI=1 -DH2O_UNITTEST=1"
     EXCLUDE_FROM_ALL 1)
 
+IF(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/deps/theft/Makefile)
+    ExternalProject_Add(build-theft
+                        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/theft"
+                        BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/theft"
+                        CONFIGURE_COMMAND "true"
+                        BUILD_COMMAND cd "${CMAKE_CURRENT_SOURCE_DIR}/deps/theft" && make "BUILD=${CMAKE_CURRENT_BINARY_DIR}/theft"
+                        INSTALL_COMMAND "true")
+    SET_TARGET_PROPERTIES(build-theft PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    LINK_DIRECTORIES("${CMAKE_CURRENT_BINARY_DIR}/theft")
+    ADD_EXECUTABLE(t-00property-testing.t t/00prop/prop.c)
+    ADD_DEPENDENCIES(t-00property-testing.t build-theft)
+    TARGET_INCLUDE_DIRECTORIES(t-00property-testing.t BEFORE PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/theft/inc")
+    TARGET_LINK_LIBRARIES(t-00property-testing.t theft libh2o-evloop ${EXTRA_LIBS})
+    SET_TARGET_PROPERTIES(t-00property-testing.t PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    SET(OPTIONAL_TEST "t-00property-testing.t")
+ENDIF ()
+
 IF (LIBUV_FOUND)
     ADD_EXECUTABLE(t-00unit-libuv.t ${UNIT_TEST_SOURCE_FILES})
     SET_TARGET_PROPERTIES(t-00unit-libuv.t PROPERTIES
@@ -611,7 +636,7 @@ ENDIF (LIBUV_FOUND)
 
 ADD_CUSTOM_TARGET(check env H2O_ROOT=. BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR} prove -I. -v t/*.t
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS h2o t-00unit-evloop.t lib-examples-evloop)
+    DEPENDS h2o t-00unit-evloop.t lib-examples-evloop ${OPTIONAL_TEST})
 IF (LIBUV_FOUND)
     ADD_DEPENDENCIES(check t-00unit-libuv.t lib-examples)
 ENDIF ()
@@ -625,7 +650,6 @@ ADD_CUSTOM_TARGET(doc-publish make -f ../misc/doc.mk publish BINARY_DIR=${CMAKE_
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/doc
     DEPENDS h2o)
 
-INCLUDE(ExternalProject)
 GET_FILENAME_COMPONENT(EXTERNALPROJECT_SSL_ROOT_DIR ${OPENSSL_INCLUDE_DIR} DIRECTORY)
 
 IF (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/misc/h2get/CMakeLists.txt)
@@ -693,9 +717,17 @@ IF (BUILD_FUZZER)
             SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=address -fsanitize-coverage=edge,indirect-calls,8bit-counters")
         ELSE()
             SET(FUZZED_SOURCE_FILES "fuzz/driver.cc" "fuzz/driver_url.cc" ${FUZZED_SOURCE_FILES})
-            SET_SOURCE_FILES_PROPERTIES(${FUZZED_SOURCE_FILES} PROPERTIES COMPILE_FLAGS "-fno-omit-frame-pointer -fsanitize=fuzzer,address -fsanitize-coverage=trace-pc-guard")
+            IF (NOT CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+              SET_SOURCE_FILES_PROPERTIES(${FUZZED_SOURCE_FILES} PROPERTIES COMPILE_FLAGS "-fno-omit-frame-pointer -fsanitize=fuzzer,address -fsanitize-coverage=trace-pc-guard")
+            ELSE()
+              SET_SOURCE_FILES_PROPERTIES(${FUZZED_SOURCE_FILES} PROPERTIES COMPILE_FLAGS "-fno-omit-frame-pointer -fsanitize=fuzzer,address")
+            ENDIF()
             SET_TARGET_PROPERTIES(h2o-fuzzer-http1 h2o-fuzzer-http2 h2o-fuzzer-url PROPERTIES LINK_FLAGS "-fsanitize=fuzzer,address")
-            SET(CMAKE_EXE_LINKER_FLAGS "-fsanitize=address -fsanitize-coverage=trace-pc-guard")
+            IF (NOT CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+              SET(CMAKE_EXE_LINKER_FLAGS "-fsanitize=address -fsanitize-coverage=trace-pc-guard")
+            ELSE()
+              SET(CMAKE_EXE_LINKER_FLAGS "-fsanitize=address")
+            ENDIF()
         ENDIF()
 
     ENDIF (OSS_FUZZ)
