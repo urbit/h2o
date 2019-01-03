@@ -96,7 +96,7 @@ lib_src = [
   'lib/http2/http2_debug_state.c'
 ]
 
-osdet = build_machine.system()
+osdet = host_machine.system()
 cc = meson.get_compiler('c')
 
 inc = include_directories([
