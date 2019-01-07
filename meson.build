@@ -96,7 +96,7 @@ lib_src = [
   'lib/http2/http2_debug_state.c'
 ]
 
-osdet = build_machine.system()
+osdet = host_machine.system()
 cc = meson.get_compiler('c')
 
 inc = include_directories([
@@ -148,7 +148,7 @@ else
   openssl_dep = dependency('openssl', version: '>=1.0.0')
 endif
 
-lib = static_library('h2o', sources: lib_src, version: version, install: true,
+lib = static_library('h2o', sources: lib_src, version: version, install: false,
   include_directories: inc,
   c_args: ['-Wall', '-Wno-unused-value', '-Wno-unused-function'],
   dependencies: os_deps + [libuv_dep, zlib_dep, openssl_dep],
