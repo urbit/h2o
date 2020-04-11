@@ -137,7 +137,7 @@ elif osdet == 'linux'
 
 endif
 
-if osdet == 'darwin'
+if osdet == 'darwin' and not get_option('nix')
   libcrypto = cc.find_library('crypto', dirs: ['/usr/local/opt/openssl/lib/'])
   libssl = cc.find_library('ssl', dirs: ['/usr/local/opt/openssl/lib/'])
   openssl_dep = declare_dependency(

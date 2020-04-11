@@ -1,0 +1,2 @@
+option('nix', type: 'boolean', value: false, yield: true,
+  description: 'Build using nix.')
